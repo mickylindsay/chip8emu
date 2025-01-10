@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 const MEMORY_SIZE: usize = 4096;
 const NUM_REGISTERS: usize = 16;
@@ -23,11 +23,11 @@ pub struct Chip8 {
 
 impl Chip8 {
     pub fn new() -> Self {
-        let mut chip8 = Chip8 {
+        let chip8 = Chip8 {
             memory: [0; MEMORY_SIZE],
             registers: [0; NUM_REGISTERS],
             index: 0,
-            pc: 0x200, // Original 512 bytes held chip8 interpreter, programs start after that
+            pc: 0x200, // First 512 bytes held chip8 interpreter
             stack: [0; STACK_SIZE],
             stack_pointer: 0,
             delay_timer: 0,
@@ -36,28 +36,75 @@ impl Chip8 {
             display: [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
         };
 
-        // Temp fill display with random pixels enabled/disabled
-        for row in 0..DISPLAY_HEIGHT {
-            for col in 0..DISPLAY_WIDTH {
-                chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
-            }
-        }
-
         chip8
     }
 
+    fn emulate(&mut self) {
+        let opcode = ((self.memory[self.pc as usize] as u16) << 8) |
+            self.memory[(self.pc + 1) as usize] as u16;
+
+        self.print_graphics();
+
+        self.pc += 2;
+
+        self.execute(opcode);
+    }
+
     fn execute(&mut self, opcode: u16) {
-        let nnn = opcode & 0x0FFF;
+        let addr = opcode & 0x0FFF;
+        let x = ((opcode & 0x0F00) >> 8) as usize;
+        let y = ((opcode & 0x00F0) >> 4) as usize;
+        let byte = (opcode & 0x00FF) as u8; 
+        let nibble = (opcode & 0x000F) as u8;
         match opcode & 0xF000 {
-            0x1000 /* JP addr */ => self.pc = nnn,
-            0x6000 /* LD Vx, byte */ => self.registers[((opcode & 0xF00) >> 8) as usize] = (opcode & 0xFF) as u8,
-            0x7000 /* ADD Vx, byte */ => self.registers[((opcode & 0xF00) >> 8) as usize] += (opcode & 0xFF) as u8,
-            0x8000 /* LD Vx, Vy */ => self.registers[((opcode & 0xF00) >> 8) as usize] = self.registers[((opcode & 0xF0) >> 4) as usize],
-            _ => println!("Unknown opcode {:X}", opcode),
+            0x0000 => match opcode {
+                0x00E0 /* CLS */ => self.display = [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
+                0x00EE /* RET */ => self.return_subroutine(),
+                _ => println!("Invalid operation {:X}", opcode),
+            },
+            0x1000 /* JP addr */ => self.pc = addr,
+            0x2000 /* CALL addr */ => self.call_subroutine(addr),
+            0x3000 /* SE Vx, byte */ => self.skip_if_condition(self.registers[x] == byte),
+            0x4000 /* SNE Vx, byte */ => self.skip_if_condition(self.registers[x] != byte),
+            0x5000 /* SE Vx, Vy */ => self.skip_if_condition(self.registers[x] == self.registers[y]),
+            0x6000 /* LD Vx, byte */ => self.registers[x] = byte,
+            0x7000 /* ADD Vx, byte */ => self.registers[x] += byte,
+            0x8000 => match nibble {
+                0x0 /* LD Vx, Vy */ => self.registers[x] = self.registers[y],
+                0x1 /* OR Vx, Vy */ => self.registers[x] = self.registers[x] | self.registers[y],
+                0x2 /* AND Vx, Vy */ => self.registers[x] = self.registers[x] & self.registers[y],
+                0x3 /* XOR Vx, Vy */ => self.registers[x] = self.registers[x] ^ self.registers[y],
+                0x4 /* ADD Vx, Vy */ => self.add_registers(x, y),
+                0x5 /* SUB Vx, Vy */ => self.sub_registers(x, y),
+                0x6 /* SHR Vx */ => self.shift_right(x),
+                0x7 /* SUBN Vx */ => self.sub_registers_n(x, y),
+                0xE /* SHR Vx */ => self.shift_left(x),
+                _ => println!("Invalid operation {:X}", opcode),
+            },
+            0x9000 /* SNE Vx, Vy */ =>  self.skip_if_condition(self.registers[x] != self.registers[y]),
+            0xA000 /* LD I, addr */ => self.index = addr,
+            0xB000 /* JP V0, addr */ => self.pc = (addr + self.registers[0] as u16) & 0x3FFF,
+            0xC000 /* RND Vx, byte */ => self.registers[x] = rand::thread_rng().gen::<u8>() & byte,
+            0xD000 /* DRW Vx, Vy, nibble */ => self.draw_sprite(x, y, nibble as usize),
+            0xE000 => match byte {
+                0x9E /* SKP Vx */ => self.skip_if_condition(self.inputs[self.registers[x] as usize]),
+                0xA1 /* SKNP Vx */ => self.skip_if_condition(!self.inputs[self.registers[x] as usize]),
+                _ => println!("Invalid operation {:X}", opcode),
+            },
+            0xF000 => match byte {
+                0x07 /* LD Vx, DT */ => self.registers[x] = self.delay_timer,
+                0x0A /* LD Vx, K */ => self.wait_for_input(x),
+                0x15 /* LD DT, Vx */ => self.delay_timer = self.registers[x],
+                0x18 /* LD ST, Vx */ => self.sound_timer = self.registers[x],
+                0x1E /* ADD I, Vx */ => self.index += self.registers[x] as u16,
+                // 0x29 /* LD F, Vx */ => self.load_font(),
+                _ => println!("Invalid operation {:X}", opcode),
+            },
+            _ => println!("Invalid operation {:X}", opcode),
         }
     }
 
-    pub fn print_graphics(&mut self) {
+    fn print_graphics(&mut self) {
         // Ansi clear screen
         print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
 
@@ -76,16 +123,100 @@ impl Chip8 {
         print!("{esc}[33;1H", esc = 27 as char);
         io::stdout().flush().unwrap()
     }
-   
+
+    // Op code functions
+
+    fn return_subroutine(&mut self) {
+        self.stack_pointer -= 1;
+        self.pc = self.stack[self.stack_pointer as usize];
+    }
+
+    fn call_subroutine(&mut self, addr: u16) {
+        self.stack_pointer += 1;
+        self.stack[self.stack_pointer as usize] = addr
+    }
+
+    fn skip_if_condition(&mut self, con: bool) {
+        if con { self.pc += 2 }
+    }
+
+    fn add_registers(&mut self, x: usize, y: usize) {
+        let (sum, carry) = self.registers[x].overflowing_add(self.registers[y]);
+        self.registers[x] = sum;
+        self.registers[0xF] = if carry { 1 } else { 0 };
+    }
+
+    fn sub_registers(&mut self, x: usize, y: usize) {
+        self.registers[0xF] = if self.registers[x] >= self.registers[y] { 1 } else { 0 };
+        self.registers[x] -= self.registers[y];
+    }
+
+    fn shift_right(&mut self, x: usize) {
+        self.registers[0xF] = self.registers[x] & 0x1;
+        self.registers[x] >>= 1;
+    }
+
+    fn sub_registers_n(&mut self, x: usize, y: usize) {
+        self.registers[0xF] = if self.registers[y] >= self.registers[x] { 1 } else { 0 };
+        self.registers[x] = self.registers[y] - self.registers[x];
+    }
+
+    fn shift_left(&mut self, x: usize) {
+        self.registers[0xF] = (self.registers[x] & 0x80) >> 7;
+        self.registers[x] <<= 1;
+    }
+
+    fn draw_sprite(&mut self, x_reg: usize, y_reg: usize, n: usize) {
+        let mut carry = false;
+        let x_coord = self.registers[x_reg] as usize;
+        let y_coord = self.registers[y_reg] as usize;
+
+        for y_offset in 0..n {
+            let src = self.memory[self.index as usize + y_offset];
+            for x_offset  in 0..8 {
+                if (src & (0x80 >> x_offset)) == 1 {
+                    let y = (y_coord + y_offset) % DISPLAY_HEIGHT;
+                    let x = (x_coord + x_offset) % DISPLAY_WIDTH;
+
+                    if !carry && self.display[y][x] {
+                        carry = true;
+                    }
+                    self.display[y][x] = !self.display[y][x];
+                }
+            }
+        }
+        self.registers[0xF] = if carry { 1 } else { 0 };
+    }
+
+    fn wait_for_input(&mut self, x: usize) {
+        let mut pressed = false;
+        for index in 0..NUM_KEYS {
+            if self.inputs[index] {
+                self.registers[x] = index as u8;
+                pressed = true;
+                break;
+            }
+        }
+        if !pressed {
+            self.pc -= 2;
+        }
+    }
+
 }
 
 fn main() {
-    let mut stdin = io::stdin();
+    let mut chip8 = Chip8::new();
 
-    let mut chip_emu = Chip8::new();
-    chip_emu.print_graphics();
+    chip8.memory[0x200] = 0xF0;
+    chip8.memory[0x201] = 0x0A;
 
-    // Push enter to continues
-    let _ = stdin.read(&mut [0u8]).unwrap();
+    // Temp fill display with random pixels enabled/disabled
+    for row in 0..DISPLAY_HEIGHT {
+        for col in 0..DISPLAY_WIDTH {
+            chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
+        }
+    }
+
+    chip8.emulate();
 
 }
