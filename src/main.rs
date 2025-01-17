@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::io::{self, Write};
+use std::io::{self, Write, Read};
 
 const MEMORY_SIZE: usize = 4096;
 const NUM_REGISTERS: usize = 16;
@@ -23,7 +23,7 @@ pub struct Chip8 {
 
 impl Chip8 {
     pub fn new() -> Self {
-        let chip8 = Chip8 {
+        let mut chip8 = Chip8 {
             memory: [0; MEMORY_SIZE],
             registers: [0; NUM_REGISTERS],
             index: 0,
@@ -36,6 +36,29 @@ impl Chip8 {
             display: [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
         };
 
+        let font_set: [u8; 80] = [
+            0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+            0x20, 0x60, 0x20, 0x20, 0x70, // 1
+            0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+            0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+            0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+            0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+            0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+            0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+            0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+            0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+            0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+            0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+            0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+            0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+            0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+        ];
+
+        for i in 0..80 {
+            chip8.memory[i] = font_set[i];
+        }
+
         chip8
     }
 
@@ -46,8 +69,9 @@ impl Chip8 {
         self.print_graphics();
 
         self.pc += 2;
-
         self.execute(opcode);
+    
+        io::stdin().read(&mut [0]).unwrap();
     }
 
     fn execute(&mut self, opcode: u16) {
@@ -56,6 +80,7 @@ impl Chip8 {
         let y = ((opcode & 0x00F0) >> 4) as usize;
         let byte = (opcode & 0x00FF) as u8; 
         let nibble = (opcode & 0x000F) as u8;
+        
         match opcode & 0xF000 {
             0x0000 => match opcode {
                 0x00E0 /* CLS */ => self.display = [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
@@ -97,7 +122,7 @@ impl Chip8 {
                 0x15 /* LD DT, Vx */ => self.delay_timer = self.registers[x],
                 0x18 /* LD ST, Vx */ => self.sound_timer = self.registers[x],
                 0x1E /* ADD I, Vx */ => self.index += self.registers[x] as u16,
-                // 0x29 /* LD F, Vx */ => self.load_font(),
+                0x29 /* LD F, Vx */ => self.load_font(x),
                 _ => println!("Invalid operation {:X}", opcode),
             },
             _ => println!("Invalid operation {:X}", opcode),
@@ -119,6 +144,9 @@ impl Chip8 {
         let opcode = (self.memory[self.pc as usize] as u16) << 8
             | self.memory[(self.pc + 1) as usize] as u16;
         print!("{esc}[2;67HOp:0x{opcode:0>4X}", esc = 27 as char);
+        print!("{esc}[3;67HIndex:0x{index:0>4X}", esc = 27 as char, index = self.index);
+        
+        
 
         print!("{esc}[33;1H", esc = 27 as char);
         io::stdout().flush().unwrap()
@@ -174,14 +202,14 @@ impl Chip8 {
         for y_offset in 0..n {
             let src = self.memory[self.index as usize + y_offset];
             for x_offset  in 0..8 {
-                if (src & (0x80 >> x_offset)) == 1 {
+                if (src & (0x80 >> x_offset)) != 0 {
                     let y = (y_coord + y_offset) % DISPLAY_HEIGHT;
                     let x = (x_coord + x_offset) % DISPLAY_WIDTH;
 
                     if !carry && self.display[y][x] {
                         carry = true;
                     }
-                    self.display[y][x] = !self.display[y][x];
+                    self.display[y][x] ^= true;
                 }
             }
         }
@@ -201,22 +229,35 @@ impl Chip8 {
             self.pc -= 2;
         }
     }
-
+    
+    fn load_font(&mut self, x: usize) {
+        self.index = (self.registers[x] as u16) * 5;
+    }    
 }
 
 fn main() {
     let mut chip8 = Chip8::new();
 
-    chip8.memory[0x200] = 0xF0;
-    chip8.memory[0x201] = 0x0A;
+    chip8.memory[0x200] = 0x63;
+    chip8.memory[0x201] = 0x01;
+
+    chip8.memory[0x202] = 0xF3;
+    chip8.memory[0x203] = 0x29;
+
+    chip8.memory[0x204] = 0xD0;
+    chip8.memory[0x205] = 0x05;
+
+    chip8.memory[0x206] = 0xF0;
+    chip8.memory[0x207] = 0x0A;
 
     // Temp fill display with random pixels enabled/disabled
     for row in 0..DISPLAY_HEIGHT {
         for col in 0..DISPLAY_WIDTH {
-            chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
+            // chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
         }
     }
+    while true {
+        chip8.emulate();
 
-    chip8.emulate();
-
+    }
 }
