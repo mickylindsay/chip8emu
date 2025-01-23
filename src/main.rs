@@ -1,5 +1,7 @@
 use rand::Rng;
-use std::io::{self, Write, Read};
+use std::io::{self, Write};
+use std::time::{Instant, Duration};
+use std::thread;
 
 const MEMORY_SIZE: usize = 4096;
 const NUM_REGISTERS: usize = 16;
@@ -66,12 +68,20 @@ impl Chip8 {
         let opcode = ((self.memory[self.pc as usize] as u16) << 8) |
             self.memory[(self.pc + 1) as usize] as u16;
 
+        // TODO separate graphics print
         self.print_graphics();
 
         self.pc += 2;
         self.execute(opcode);
-    
-        io::stdin().read(&mut [0]).unwrap();
+        
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+
+        if self.sound_timer > 0 {
+            self.sound_timer -= 1;
+            // Play sound whenever timer > 0. Probably just print ascii bell?
+        }
     }
 
     fn execute(&mut self, opcode: u16) {
@@ -133,6 +143,9 @@ impl Chip8 {
     }
 
     fn print_graphics(&mut self) {
+        // TODO rather than print and clear each time, only print updated values/pixels
+        // Stops the flashing from ANSI printing
+
         // Ansi clear screen
         print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
 
@@ -280,8 +293,16 @@ fn main() {
             // chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
         }
     }
+    
+    let emu_speed = Duration::from_secs_f64(1.0/ 60.0); // Default 60hz
+
     loop {
+        let start_time = Instant::now();
         chip8.emulate();
 
+        let elapsed_time = start_time.elapsed();
+        if elapsed_time < emu_speed {
+            thread::sleep(emu_speed - elapsed_time);
+        }
     }
 }
