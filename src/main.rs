@@ -123,6 +123,9 @@ impl Chip8 {
                 0x18 /* LD ST, Vx */ => self.sound_timer = self.registers[x],
                 0x1E /* ADD I, Vx */ => self.index += self.registers[x] as u16,
                 0x29 /* LD F, Vx */ => self.load_font(x),
+                0x33 /* LD B, Vx */ => self.store_binary_coded_decimal(x),
+                0x55 /* LD [I], Vx */ => self.store_many_registers(x),
+                0x65 /* LD Vx, [I] */ => self.load_many_registers(x),
                 _ => println!("Invalid operation {:X}", opcode),
             },
             _ => println!("Invalid operation {:X}", opcode),
@@ -233,6 +236,27 @@ impl Chip8 {
     fn load_font(&mut self, x: usize) {
         self.index = (self.registers[x] as u16) * 5;
     }    
+   
+    fn store_binary_coded_decimal(&mut self, x: usize) {
+        let val = self.registers[x];
+        self.memory[self.index as usize] = val / 100;
+        self.memory[(self.index + 1) as usize] = (val % 100) / 10;
+        self.memory[(self.index + 2) as usize] = val % 10;
+    
+    }
+    
+    fn store_many_registers(&mut self, x: usize) {
+        for reg_index in 0..x {
+            self.memory[(self.index as usize) + reg_index] = self.registers[reg_index];
+        }
+    }    
+   
+    fn load_many_registers(&mut self, x: usize) {
+        for reg_index in 0..x {
+            self.registers[reg_index] = self.memory[(self.index as usize) + reg_index]
+        }
+    }    
+
 }
 
 fn main() {
@@ -256,7 +280,7 @@ fn main() {
             // chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
         }
     }
-    while true {
+    loop {
         chip8.emulate();
 
     }
