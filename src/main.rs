@@ -1,7 +1,9 @@
 use rand::Rng;
-use std::io::{self, Write};
-use std::time::{Instant, Duration};
+use std::io::{self, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::thread;
+use std::time::{Duration, Instant};
+use termios::*;
 
 const MEMORY_SIZE: usize = 4096;
 const NUM_REGISTERS: usize = 16;
@@ -11,7 +13,7 @@ const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
 
 pub struct Chip8 {
-    memory: [u8; MEMORY_SIZE], // 4k memory
+    memory: [u8; MEMORY_SIZE],      // 4k memory
     registers: [u8; NUM_REGISTERS], // registers V0 -> VF
     index: u16,
     pc: u16,
@@ -65,15 +67,15 @@ impl Chip8 {
     }
 
     fn emulate(&mut self) {
-        let opcode = ((self.memory[self.pc as usize] as u16) << 8) |
-            self.memory[(self.pc + 1) as usize] as u16;
+        let opcode = ((self.memory[self.pc as usize] as u16) << 8)
+            | self.memory[(self.pc + 1) as usize] as u16;
 
         // TODO separate graphics print
         self.print_graphics();
 
         self.pc += 2;
         self.execute(opcode);
-        
+
         if self.delay_timer > 0 {
             self.delay_timer -= 1;
         }
@@ -88,9 +90,9 @@ impl Chip8 {
         let addr = opcode & 0x0FFF;
         let x = ((opcode & 0x0F00) >> 8) as usize;
         let y = ((opcode & 0x00F0) >> 4) as usize;
-        let byte = (opcode & 0x00FF) as u8; 
+        let byte = (opcode & 0x00FF) as u8;
         let nibble = (opcode & 0x000F) as u8;
-        
+
         match opcode & 0xF000 {
             0x0000 => match opcode {
                 0x00E0 /* CLS */ => self.display = [[false; DISPLAY_WIDTH]; DISPLAY_HEIGHT],
@@ -151,7 +153,7 @@ impl Chip8 {
 
         // Print screen
         for row in self.display {
-            let chars = row.map(|enabled| if enabled { '█' } else {  ' ' });
+            let chars = row.map(|enabled| if enabled { '█' } else { ' ' });
             println!("{}", String::from_iter(chars));
         }
 
@@ -160,9 +162,11 @@ impl Chip8 {
         let opcode = (self.memory[self.pc as usize] as u16) << 8
             | self.memory[(self.pc + 1) as usize] as u16;
         print!("{esc}[2;67HOp:0x{opcode:0>4X}", esc = 27 as char);
-        print!("{esc}[3;67HIndex:0x{index:0>4X}", esc = 27 as char, index = self.index);
-        
-        
+        print!(
+            "{esc}[3;67HIndex:0x{index:0>4X}",
+            esc = 27 as char,
+            index = self.index
+        );
 
         print!("{esc}[33;1H", esc = 27 as char);
         io::stdout().flush().unwrap()
@@ -181,7 +185,9 @@ impl Chip8 {
     }
 
     fn skip_if_condition(&mut self, con: bool) {
-        if con { self.pc += 2 }
+        if con {
+            self.pc += 2
+        }
     }
 
     fn add_registers(&mut self, x: usize, y: usize) {
@@ -191,7 +197,11 @@ impl Chip8 {
     }
 
     fn sub_registers(&mut self, x: usize, y: usize) {
-        self.registers[0xF] = if self.registers[x] >= self.registers[y] { 1 } else { 0 };
+        self.registers[0xF] = if self.registers[x] >= self.registers[y] {
+            1
+        } else {
+            0
+        };
         self.registers[x] -= self.registers[y];
     }
 
@@ -201,7 +211,11 @@ impl Chip8 {
     }
 
     fn sub_registers_n(&mut self, x: usize, y: usize) {
-        self.registers[0xF] = if self.registers[y] >= self.registers[x] { 1 } else { 0 };
+        self.registers[0xF] = if self.registers[y] >= self.registers[x] {
+            1
+        } else {
+            0
+        };
         self.registers[x] = self.registers[y] - self.registers[x];
     }
 
@@ -217,7 +231,7 @@ impl Chip8 {
 
         for y_offset in 0..n {
             let src = self.memory[self.index as usize + y_offset];
-            for x_offset  in 0..8 {
+            for x_offset in 0..8 {
                 if (src & (0x80 >> x_offset)) != 0 {
                     let y = (y_coord + y_offset) % DISPLAY_HEIGHT;
                     let x = (x_coord + x_offset) % DISPLAY_WIDTH;
@@ -245,64 +259,79 @@ impl Chip8 {
             self.pc -= 2;
         }
     }
-    
+
     fn load_font(&mut self, x: usize) {
         self.index = (self.registers[x] as u16) * 5;
-    }    
-   
+    }
+
     fn store_binary_coded_decimal(&mut self, x: usize) {
         let val = self.registers[x];
         self.memory[self.index as usize] = val / 100;
         self.memory[(self.index + 1) as usize] = (val % 100) / 10;
         self.memory[(self.index + 2) as usize] = val % 10;
-    
     }
-    
+
     fn store_many_registers(&mut self, x: usize) {
         for reg_index in 0..x {
             self.memory[(self.index as usize) + reg_index] = self.registers[reg_index];
         }
-    }    
-   
+    }
+
     fn load_many_registers(&mut self, x: usize) {
         for reg_index in 0..x {
             self.registers[reg_index] = self.memory[(self.index as usize) + reg_index]
         }
-    }    
-
+    }
 }
 
 fn main() {
-    let mut chip8 = Chip8::new();
+    // Setup std in for keyboard input
+    let stdin = io::stdin().as_raw_fd();
+    let original_term = Termios::from_fd(stdin).unwrap();
+    let mut termios = original_term.clone();
+    // Change input to read buffer rather than line and remove echo
+    termios.c_lflag &= !(ECHO | ICANON);
+    tcsetattr(stdin, TCSANOW, &mut termios).unwrap();
+    let mut reader = io::stdin();
+    let mut buffer = [0; 1]; // read exactly one byte
+ 
 
+    let mut chip8 = Chip8::new();
+    // Temp manual rom to print sprite and wait for input
     chip8.memory[0x200] = 0x63;
     chip8.memory[0x201] = 0x01;
-
     chip8.memory[0x202] = 0xF3;
     chip8.memory[0x203] = 0x29;
-
     chip8.memory[0x204] = 0xD0;
     chip8.memory[0x205] = 0x05;
-
     chip8.memory[0x206] = 0xF0;
     chip8.memory[0x207] = 0x0A;
 
-    // Temp fill display with random pixels enabled/disabled
+    /* Fill display with random pixels enabled/disabled
     for row in 0..DISPLAY_HEIGHT {
         for col in 0..DISPLAY_WIDTH {
-            // chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
+            chip8.display[row][col] = rand::thread_rng().gen_bool(0.5);
         }
     }
-    
-    let emu_speed = Duration::from_secs_f64(1.0/ 60.0); // Default 60hz
+    */
+ 
+    let emu_speed = Duration::from_secs_f64(1.0 / 60.0); // Default 60hz
 
     loop {
         let start_time = Instant::now();
+        reader.read_exact(&mut buffer).unwrap();
+        println!("Value: {:?}", buffer);
+ 
+        /* Temp remove emu to work on keyboard input
         chip8.emulate();
 
         let elapsed_time = start_time.elapsed();
         if elapsed_time < emu_speed {
             thread::sleep(emu_speed - elapsed_time);
         }
+        */
     }
+   
+    // Reset terminal to orinal config
+    tcsetattr(stdin, TCSANOW, &original_term).unwrap();
 }
